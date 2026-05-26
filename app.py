@@ -1,11 +1,14 @@
 """
-app.py — WaveMind Chatbot API
+app.py - WaveMind Chatbot API
 ------------------------------
 All routes are defined here. No Blueprint. No routes.py.
 
-GET  /api/chat           — health check
-POST /api/chat           — single complete reply (with continuation + 150 word cap)
-POST /api/chat/stream    — NDJSON streaming reply (with 150 word cap)
+GET  /api/chat           - health check
+POST /api/chat           - single complete reply
+POST /api/chat/stream    - NDJSON streaming reply
+
+Daily limit: CHAT_DAILY_LIMIT medical questions per IP per day (resets at midnight).
+Successful responses include `questionsRemaining` for the frontend counter.
 """
 
 from __future__ import annotations
@@ -19,7 +22,10 @@ from flask_cors import CORS
 
 from wavemind.chat_service import (
     ChatServiceError,
+    _check_daily_limit,
     _check_rate_limit,
+    _get_daily_remaining,
+    counts_toward_daily_limit,
     get_chat_reply,
     stream_chat_reply,
     warmup_chat_provider,
@@ -62,7 +68,7 @@ def _validate_message(message: str):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/chat — health check
+# GET /api/chat - health check
 # ---------------------------------------------------------------------------
 
 @app.route("/api/chat", methods=["GET"])
@@ -82,11 +88,12 @@ def health():
         "ollama": ollama_status,
         "provider": Config.CHAT_PROVIDER,
         "port": Config.PORT,
+        "dailyLimit": Config.CHAT_DAILY_LIMIT,
     }), 200
 
 
 # ---------------------------------------------------------------------------
-# POST /api/chat — single complete reply
+# POST /api/chat - single complete reply
 # ---------------------------------------------------------------------------
 
 @app.route("/api/chat", methods=["POST"])
@@ -99,24 +106,42 @@ def chat():
     if err:
         return jsonify(err[0]), err[1]
 
-    if _check_rate_limit(_get_client_key()):
+    client_key = _get_client_key()
+
+    # 1. Per-minute burst check (unchanged)
+    if _check_rate_limit(client_key):
         return jsonify({
             "error": "Too many chat requests. Please wait a moment and try again.",
             "code": "RATE_LIMITED",
         }), 429
 
+    # 2. Daily question limit applies only to medical-scope messages.
+    should_count = counts_toward_daily_limit(message)
+    remaining = _get_daily_remaining(client_key)
+    if should_count and remaining <= 0:
+        return jsonify({
+            "error": "You've used all your questions for today. Come back tomorrow!",
+            "code": "DAILY_LIMIT_REACHED",
+            "questionsRemaining": 0,
+        }), 429
+
     try:
         result = get_chat_reply(message)
+        if should_count and result.get("matchedIntent", "").startswith("ollama:"):
+            is_limited, remaining = _check_daily_limit(client_key)
+            if is_limited:
+                remaining = 0
         return jsonify({
             "text": result["reply"],
             "matchedIntent": result["matchedIntent"],
+            "questionsRemaining": remaining,
         }), 200
     except ChatServiceError as exc:
         return jsonify({"error": str(exc), "code": exc.code}), exc.status
 
 
 # ---------------------------------------------------------------------------
-# POST /api/chat/stream — NDJSON streaming reply
+# POST /api/chat/stream - NDJSON streaming reply
 # ---------------------------------------------------------------------------
 
 @app.route("/api/chat/stream", methods=["POST"])
@@ -129,15 +154,34 @@ def chat_stream():
     if err:
         return jsonify(err[0]), err[1]
 
-    if _check_rate_limit(_get_client_key()):
+    client_key = _get_client_key()
+
+    # 1. Per-minute burst check (unchanged)
+    if _check_rate_limit(client_key):
         return jsonify({
             "error": "Too many chat requests. Please wait a moment and try again.",
             "code": "RATE_LIMITED",
         }), 429
 
+    # 2. Daily question limit applies only to medical-scope messages.
+    should_count = counts_toward_daily_limit(message)
+    remaining = _get_daily_remaining(client_key)
+    if should_count and remaining <= 0:
+        return jsonify({
+            "error": "You've used all your questions for today. Come back tomorrow!",
+            "code": "DAILY_LIMIT_REACHED",
+            "questionsRemaining": 0,
+        }), 429
+
     def generate():
         try:
             for chunk in stream_chat_reply(message):
+                if chunk.get("type") == "done":
+                    if should_count and chunk.get("matchedIntent", "").startswith("ollama:"):
+                        is_limited, updated_remaining = _check_daily_limit(client_key)
+                        chunk["questionsRemaining"] = 0 if is_limited else updated_remaining
+                    else:
+                        chunk["questionsRemaining"] = remaining
                 yield json.dumps(chunk) + "\n"
         except ChatServiceError as exc:
             yield json.dumps({"type": "error", "error": str(exc), "code": exc.code}) + "\n"

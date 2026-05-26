@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime
 import json
 import re
+import sqlite3
 import time
 import threading
 from typing import Generator
@@ -28,38 +30,24 @@ class ChatServiceError(Exception):
 # Static reply strings
 # ---------------------------------------------------------------------------
 
-# FIX: Tighter system prompt. Fewer tokens = faster first token time.
-# "under 80 words" keeps tinyllama from rambling and hitting num_predict cutoff.
 MEDICAL_SYSTEM_PROMPT = (
     "You are WaveMind, a medical assistant. "
     "Answer only medical or healthcare questions. "
     "Give general education only, never personal diagnosis or prescriptions. "
     "Never use numbered lists, bullet points, or headings. "
-    "Write only in plain flowing sentences. "
-    "Keep every final response between 4 and 6 complete sentences."
+    "Write only in plain flowing sentences."
 )
 
-# Wrapping the user question in an explicit instruction template
-# forces tinyllama to respect format constraints far more reliably
-# than a system prompt alone.
 _PROMPT_TEMPLATE = (
-    "Answer the following medical question in 4 to 6 complete sentences. "
+    "Answer the following medical question in exactly 4 to 5 complete sentences. "
     "Do NOT use numbered lists, bullet points, or headings. "
     "Write only plain flowing sentences. "
-    "Do not repeat, restate, or quote the question in the answer. "
     "Cover: what it is, common causes, what to do, and when to see a doctor. "
     "If it is an emergency (chest pain, stroke, seizure, heavy bleeding), say so in the first sentence.\n\n"
     "Question: {question}\n\n"
-    "Answer in 4 to 6 sentences only:"
+    "Answer in 4 to 5 sentences only:"
 )
-_PROMPT_TEMPLATE_STRICT = (
-    "Answer the following medical question in exactly 4 complete sentences. "
-    "Use only plain flowing sentences with proper punctuation. "
-    "Do NOT use numbering, bullets, headings, labels, or list formatting. "
-    "Do not repeat the question.\n\n"
-    "Question: {question}\n\n"
-    "Answer in exactly 4 complete sentences:"
-)
+
 GREETING_REPLY = (
     "Hi, I'm WaveMind. I can help with general medical questions. "
     "Please don't share personal identifying medical details."
@@ -96,94 +84,7 @@ MEDICAL_SCOPE_KEYWORDS: list[str] = [
     "migraine", "dementia", "alzheimer", "parkinson", "tremor", "weakness",
     "numbness", "paralysis", "dizziness", "vertigo", "fainting", "memory",
     "cognitive", "sleep", "brainwave", "theta", "alpha", "risk",
-    "follow-up", "follow up", "body"
-
- # General healthcare
-    "physician", "surgeon", "consultation", "checkup", "health issue",
-    "medical issue", "medical advice", "urgent care", "caregiver",
-    "nurse", "paramedic", "ambulance", "icu", "opd", "ward",
-
-    # Symptoms
-    "vomit", "vomiting", "nausea", "fatigue", "tired", "weak",
-    "body pain", "joint pain", "back pain", "neck pain",
-    "burning sensation", "itching", "irritation", "allergy",
-    "sneezing", "runny nose", "blocked nose", "congestion",
-    "shortness of breath", "breathlessness", "palpitations",
-    "loss of appetite", "weight loss", "weight gain",
-    "dehydration", "chills", "night sweats", "blurred vision",
-    "vision loss", "double vision", "hearing loss", "ringing ears",
-    "ear pain", "tooth pain", "gum bleeding", "mouth ulcer",
-    "sore throat", "hoarseness", "constipation", "diarrhea",
-    "bloating", "acid reflux", "indigestion", "gastric",
-    "heartburn", "vomiting blood", "bloody stool",
-
-    # Emergency / trauma
-    "burn", "fracture", "broken bone", "sprain", "dislocation",
-    "head injury", "concussion", "poison", "poisoning",
-    "snake bite", "dog bite", "animal bite", "electric shock",
-    "heat stroke", "sunburn", "unconscious", "collapse",
-    "shock", "severe pain", "trauma",
-
-    # Infectious diseases
-    "covid", "corona", "tuberculosis", "tb", "malaria",
-    "dengue", "typhoid", "hepatitis", "hiv", "aids",
-    "fungal infection", "viral infection", "bacterial infection",
-    "food poisoning",
-
-    # Chronic diseases
-    "arthritis", "asthma", "copd", "obesity",
-    "osteoporosis", "cancer", "tumor", "tumour",
-    "autoimmune", "fibromyalgia", "anemia",
-
-    # Neurology / EEG related
-    "brain activity", "brain signal", "neural activity",
-    "neurodegenerative", "neuro disorder", "attention",
-    "focus", "concentration", "brain mapping",
-    "signal quality", "artifact", "eeg artifact",
-    "alpha wave", "beta wave", "gamma wave", "delta wave",
-    "cognitive decline", "neurofeedback",
-
-    # Mental health
-    "stress", "panic attack", "panic", "mood disorder",
-    "bipolar", "ocd", "ptsd", "insomnia",
-    "suicidal", "hallucination", "confusion",
-
-    # Women's health
-    "period", "menstruation", "pcos", "pcod",
-    "ovulation", "fertility", "miscarriage",
-    "breast pain", "menopause",
-
-    # Child health
-    "pediatric", "child fever", "newborn", "infant",
-    "vaccines", "growth", "developmental delay",
-
-    # Diagnostics
-    "ecg", "ekg", "ultrasound", "biopsy",
-    "cbc", "lipid profile", "thyroid test",
-    "glucose", "hb1ac", "oxygen level", "spo2",
-
-    # Medications
-    "antibiotic", "painkiller", "paracetamol",
-    "ibuprofen", "insulin", "antidepressant",
-    "side effects", "drug interaction",
-
-    # Procedures
-    "operation", "stitches", "scan report",
-    "discharge summary", "medical report",
-    "prescribed", "therapy session",
-
-    # Conversational phrases
-    "not feeling well", "feeling sick",
-    "should i see a doctor", "is this serious",
-    "what should i do", "how to treat",
-    "home remedy", "medical emergency",
-    "health concern", "symptoms of",
-    "signs of", "side effect", "recovery time",
-
-    # Common spelling variations
-    "x ray", "cat scan", "bp", "sugar level",
-    "high sugar", "low sugar", "high bp", "low bp",
-
+    "follow-up", "follow up",
 ]
 
 GENERAL_TOPIC_KEYWORDS: list[str] = [
@@ -204,10 +105,9 @@ _GREETING_RE = re.compile(
     r"^(hi|hello|hey|good morning|good afternoon|good evening|namaste|thanks|thank you)[\s!.?]*$",
     re.IGNORECASE,
 )
-_SENTENCE_RE = re.compile(r"[^.!?]+[.!?]")
 
 # ---------------------------------------------------------------------------
-# HTTP session --" reuse TCP connection across requests (saves ~100-300ms/req)
+# HTTP session — reuse TCP connection across requests (saves ~100-300ms/req)
 # ---------------------------------------------------------------------------
 
 _session = requests.Session()
@@ -243,6 +143,19 @@ def _is_medical_related(message: str) -> bool:
     return any(_includes_keyword(message, kw) for kw in EXPLICIT_MEDICAL_CONTEXT)
 
 
+def counts_toward_daily_limit(message: str) -> bool:
+    """
+    Daily quota should only be consumed by medical-scope questions.
+    Greetings and non-medical requests are always free.
+    """
+    normalized = _normalize(message)
+    if not normalized:
+        return False
+    if _is_greeting(normalized):
+        return False
+    return _is_medical_related(normalized)
+
+
 def _trim_to_last_sentence(text: str) -> str:
     """Cut text at the last complete sentence ending in . ! or ?"""
     match = re.search(r"^([\s\S]*[.!?])(?:\s|$)", text)
@@ -255,68 +168,6 @@ def _word_count(text: str) -> int:
 
 def _ends_with_sentence(text: str) -> bool:
     return bool(re.search(r"[.!?]\s*$", text.strip()))
-
-
-def _enforce_max_sentences(text: str, max_sentences: int) -> str:
-    # Convert inline numbered markers (" 3. ") into sentence boundaries first.
-    normalized = re.sub(r"\s+\d+\.\s+(?=[A-Za-z])", ". ", text)
-    sentences = [re.sub(r"\s+", " ", s).strip() for s in _SENTENCE_RE.findall(normalized)]
-    sentences = [
-        s for s in sentences
-        if not re.fullmatch(r"\d+[.!?]?", re.sub(r"\s+", " ", s).strip())
-    ]
-    if not sentences:
-        return text.strip()
-    return " ".join(sentences[:max_sentences]).strip()
-
-
-def _count_complete_sentences(text: str) -> int:
-    normalized = re.sub(r"\s+\d+\.\s+(?=[A-Za-z])", ". ", text)
-    sentences = [re.sub(r"\s+", " ", s).strip() for s in _SENTENCE_RE.findall(normalized)]
-    sentences = [
-        s for s in sentences
-        if not re.fullmatch(r"\d+[.!?]?", re.sub(r"\s+", " ", s).strip())
-    ]
-    return len(sentences)
-
-
-def _sanitize_model_reply(text: str, question: str) -> str:
-    """Remove prompt-echo artifacts like 'Question:' and 'Sentence 1:'."""
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    if not cleaned:
-        return ""
-
-    normalized_question = re.sub(r"\s+", " ", question).strip().rstrip(" .!?")
-
-    for _ in range(2):
-        cleaned = re.sub(r"^(?:answer|response)\s*:\s*", "", cleaned, flags=re.IGNORECASE).strip()
-        had_question_prefix = bool(
-            re.match(r"^(?:question|user question|query)\s*:\s*", cleaned, flags=re.IGNORECASE)
-        )
-        cleaned = re.sub(r"^(?:question|user question|query)\s*:\s*", "", cleaned, flags=re.IGNORECASE).strip()
-
-        if normalized_question:
-            cleaned = re.sub(
-                rf"^[\"']?{re.escape(normalized_question)}[\"']?[.!?]*\s*",
-                "",
-                cleaned,
-                flags=re.IGNORECASE,
-            ).strip()
-
-        if had_question_prefix and "?" in cleaned:
-            first, rest = cleaned.split("?", 1)
-            if len(first.split()) <= 30:
-                cleaned = rest.strip()
-
-    cleaned = re.sub(
-        r"(?:(?<=^)|(?<=[.!?]\s))(?:sentence\s*)?\d+\s*:\s*",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"(?:(?<=^)|(?<=[.!?]\s))\d+\.\s+", "", cleaned)
-    cleaned = re.sub(r"\s+\d+[.!?]?\s*$", "", cleaned).strip()
-    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _enforce_word_limit(text: str, max_words: int) -> str:
@@ -407,11 +258,6 @@ def _ollama_stream(prompt: str) -> Generator[str, None, None]:
 
 
 def _get_ollama_reply(message: str) -> dict:
-    """
-    Single-shot Ollama call. No continuations --" each continuation
-    added 10-15s of latency. num_predict=120 + num_ctx=512 ensures
-    the model finishes within budget without mid-sentence cuts.
-    """
     prompt = _PROMPT_TEMPLATE.format(question=message)
     data = _ollama_generate(prompt)
     raw = (data.get("response") or "").strip()
@@ -419,20 +265,11 @@ def _get_ollama_reply(message: str) -> dict:
     if not raw:
         raise ChatServiceError("PROVIDER_EMPTY_RESPONSE", "Ollama returned an empty reply", 502)
 
-    def _finalize(raw_text: str) -> str:
-        reply_raw = _sanitize_model_reply(raw_text, message)
-        reply_clean = _enforce_word_limit(reply_raw, Config.OLLAMA_MAX_WORDS)
-        if not _ends_with_sentence(reply_clean):
-            reply_clean = _trim_to_last_sentence(reply_clean)
-        return _enforce_max_sentences(reply_clean, 6)
+    reply_raw = re.sub(r"\s+", " ", raw).strip()
+    reply = _enforce_word_limit(reply_raw, Config.OLLAMA_MAX_WORDS)
 
-    reply = _finalize(raw)
-    if _count_complete_sentences(reply) < 4:
-        strict_prompt = _PROMPT_TEMPLATE_STRICT.format(question=message)
-        strict_data = _ollama_generate(strict_prompt)
-        strict_raw = (strict_data.get("response") or "").strip()
-        if strict_raw:
-            reply = _finalize(strict_raw)
+    if not _ends_with_sentence(reply):
+        reply = _trim_to_last_sentence(reply)
 
     if not reply:
         raise ChatServiceError("PROVIDER_EMPTY_RESPONSE", "Ollama returned an empty reply", 502)
@@ -441,7 +278,7 @@ def _get_ollama_reply(message: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Rate limiting
+# Per-minute rate limiting (burst protection — unchanged)
 # ---------------------------------------------------------------------------
 
 _rate_lock = threading.Lock()
@@ -449,7 +286,7 @@ _rate_buckets: dict[str, dict] = {}
 
 
 def _check_rate_limit(client_key: str) -> bool:
-    """Return True if the client is rate-limited."""
+    """Return True if the client exceeds the per-minute burst limit."""
     now = time.time() * 1000  # ms
     window_ms = Config.CHAT_RATE_LIMIT_WINDOW_MS
     max_req = Config.CHAT_RATE_LIMIT_MAX
@@ -468,6 +305,227 @@ def _check_rate_limit(client_key: str) -> bool:
         bucket["count"] += 1
         return bucket["count"] > max_req
 
+
+# ---------------------------------------------------------------------------
+# Daily question limit
+# ---------------------------------------------------------------------------
+
+_daily_lock = threading.Lock()
+_daily_buckets: dict[str, dict] = {}  # in-memory fallback: client_key -> {count, reset_at}
+_daily_sqlite_init_lock = threading.Lock()
+_daily_sqlite_initialized = False
+_daily_sqlite_fallback_logged = False
+
+
+def _next_midnight_ms() -> float:
+    """Return Unix timestamp (ms) of the next midnight in server local time."""
+    now = datetime.datetime.now()
+    tomorrow = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return tomorrow.timestamp() * 1000
+
+
+def _today_key() -> str:
+    """Current date key in server local timezone."""
+    return datetime.date.today().isoformat()
+
+
+def _use_sqlite_daily_store() -> bool:
+    return Config.CHAT_DAILY_STORE in {"sqlite", "sqlite3"}
+
+
+def _open_daily_sqlite() -> sqlite3.Connection:
+    timeout_s = Config.CHAT_DAILY_SQLITE_TIMEOUT_MS / 1000.0
+    conn = sqlite3.connect(
+        Config.CHAT_DAILY_SQLITE_PATH,
+        timeout=timeout_s,
+        isolation_level=None,  # autocommit mode; we manage explicit transactions.
+        check_same_thread=False,
+    )
+    conn.execute(f"PRAGMA busy_timeout = {Config.CHAT_DAILY_SQLITE_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+def _ensure_daily_sqlite() -> None:
+    global _daily_sqlite_initialized
+
+    if _daily_sqlite_initialized:
+        return
+
+    with _daily_sqlite_init_lock:
+        if _daily_sqlite_initialized:
+            return
+        conn = _open_daily_sqlite()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_quota_usage (
+                    date_key TEXT NOT NULL,
+                    client_key TEXT NOT NULL,
+                    count INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (date_key, client_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_daily_quota_usage_updated_at
+                ON daily_quota_usage(updated_at_ms)
+                """
+            )
+            _daily_sqlite_initialized = True
+        finally:
+            conn.close()
+
+
+def _check_daily_limit_sqlite(client_key: str) -> tuple[bool, int]:
+    """
+    Increment the shared daily counter in SQLite and return
+    (is_limited, questions_remaining).
+    """
+    _ensure_daily_sqlite()
+
+    daily_max = Config.CHAT_DAILY_LIMIT
+    today = _today_key()
+    now_ms = int(time.time() * 1000)
+
+    conn = _open_daily_sqlite()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT count FROM daily_quota_usage WHERE date_key = ? AND client_key = ?",
+            (today, client_key),
+        ).fetchone()
+
+        if row is None:
+            new_count = 1
+            conn.execute(
+                """
+                INSERT INTO daily_quota_usage (date_key, client_key, count, updated_at_ms)
+                VALUES (?, ?, ?, ?)
+                """,
+                (today, client_key, new_count, now_ms),
+            )
+        else:
+            current_count = int(row[0])
+            if current_count >= daily_max:
+                conn.commit()
+                return True, 0
+
+            new_count = current_count + 1
+            conn.execute(
+                """
+                UPDATE daily_quota_usage
+                SET count = ?, updated_at_ms = ?
+                WHERE date_key = ? AND client_key = ?
+                """,
+                (new_count, now_ms, today, client_key),
+            )
+
+        # Keep table small by removing stale days.
+        conn.execute("DELETE FROM daily_quota_usage WHERE date_key <> ?", (today,))
+        conn.commit()
+        remaining = daily_max - new_count
+        return False, max(remaining, 0)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _get_daily_remaining_sqlite(client_key: str) -> int:
+    """Read remaining daily quota from SQLite without consuming it."""
+    _ensure_daily_sqlite()
+
+    daily_max = Config.CHAT_DAILY_LIMIT
+    today = _today_key()
+
+    conn = _open_daily_sqlite()
+    try:
+        row = conn.execute(
+            "SELECT count FROM daily_quota_usage WHERE date_key = ? AND client_key = ?",
+            (today, client_key),
+        ).fetchone()
+        if not row:
+            return daily_max
+        used = int(row[0])
+        return max(daily_max - used, 0)
+    finally:
+        conn.close()
+
+
+def _check_daily_limit_memory(client_key: str) -> tuple[bool, int]:
+    """
+    In-memory daily limit fallback.
+    Note: counters are per-process and reset on restart.
+    """
+    now = time.time() * 1000
+    daily_max = Config.CHAT_DAILY_LIMIT
+
+    with _daily_lock:
+        stale = [k for k, v in _daily_buckets.items() if v["reset_at"] <= now]
+        for k in stale:
+            del _daily_buckets[k]
+
+        bucket = _daily_buckets.get(client_key)
+        if not bucket or bucket["reset_at"] <= now:
+            bucket = {"count": 0, "reset_at": _next_midnight_ms()}
+            _daily_buckets[client_key] = bucket
+
+        if bucket["count"] >= daily_max:
+            return True, 0
+
+        bucket["count"] += 1
+        remaining = daily_max - bucket["count"]
+        return False, max(remaining, 0)
+
+
+def _get_daily_remaining_memory(client_key: str) -> int:
+    """In-memory daily remaining fallback."""
+    now = time.time() * 1000
+    daily_max = Config.CHAT_DAILY_LIMIT
+
+    with _daily_lock:
+        stale = [k for k, v in _daily_buckets.items() if v["reset_at"] <= now]
+        for k in stale:
+            del _daily_buckets[k]
+
+        bucket = _daily_buckets.get(client_key)
+        if not bucket:
+            return daily_max
+        return max(daily_max - bucket["count"], 0)
+
+
+def _check_daily_limit(client_key: str) -> tuple[bool, int]:
+    global _daily_sqlite_fallback_logged
+
+    if _use_sqlite_daily_store():
+        try:
+            return _check_daily_limit_sqlite(client_key)
+        except Exception as exc:
+            if not _daily_sqlite_fallback_logged:
+                print(f"[WaveMind] SQLite daily quota unavailable, falling back to memory: {exc}")
+                _daily_sqlite_fallback_logged = True
+
+    return _check_daily_limit_memory(client_key)
+
+
+def _get_daily_remaining(client_key: str) -> int:
+    global _daily_sqlite_fallback_logged
+
+    if _use_sqlite_daily_store():
+        try:
+            return _get_daily_remaining_sqlite(client_key)
+        except Exception as exc:
+            if not _daily_sqlite_fallback_logged:
+                print(f"[WaveMind] SQLite daily quota unavailable, falling back to memory: {exc}")
+                _daily_sqlite_fallback_logged = True
+
+    return _get_daily_remaining_memory(client_key)
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -499,7 +557,7 @@ def get_chat_reply(message: str) -> dict:
 
 def stream_chat_reply(message: str) -> Generator[dict, None, None]:
     """
-    Stream response tokens. This is the recommended endpoint for the UI --"
+    Stream response tokens. This is the recommended endpoint for the UI —
     the user sees the first words in ~1-2s while the rest generates.
     """
     trimmed = message.strip()
@@ -522,52 +580,25 @@ def stream_chat_reply(message: str) -> Generator[dict, None, None]:
         try:
             accumulated = ""
             max_words = Config.OLLAMA_MAX_WORDS
-            emitted = ""
             stream_prompt = _PROMPT_TEMPLATE.format(question=trimmed)
 
             for token in _ollama_stream(stream_prompt):
                 accumulated += token
-                candidate = _sanitize_model_reply(accumulated, trimmed)
-                candidate = _enforce_word_limit(candidate, max_words)
-                current_words = _word_count(candidate)
+                current_words = _word_count(accumulated)
 
                 if current_words >= max_words:
-                    final = candidate
+                    final = _enforce_word_limit(accumulated, max_words)
                     if not _ends_with_sentence(final):
                         final = _trim_to_last_sentence(final)
-                    final = _enforce_max_sentences(final, 6)
-                    if final and final != emitted:
-                        if final.startswith(emitted):
-                            delta = final[len(emitted):]
-                            if delta:
-                                yield {"type": "token", "content": delta}
-                        else:
-                            yield {"type": "token", "content": final}
+                    yield {"type": "token", "content": final}
                     yield {"type": "done", "matchedIntent": f"ollama:{Config.OLLAMA_MODEL}:word_limit"}
                     return
-
-                if candidate and candidate != emitted:
-                    if candidate.startswith(emitted):
-                        delta = candidate[len(emitted):]
-                        if delta:
-                            yield {"type": "token", "content": delta}
-                    else:
-                        # Rare fallback when cleanup rewrites earlier text.
-                        yield {"type": "token", "content": candidate}
-                    emitted = candidate
-
-            final_clean = _sanitize_model_reply(accumulated, trimmed)
-            final_clean = _enforce_word_limit(final_clean, max_words)
-            if final_clean and not _ends_with_sentence(final_clean):
-                final_clean = _trim_to_last_sentence(final_clean)
-            final_clean = _enforce_max_sentences(final_clean, 6)
-            if final_clean and final_clean != emitted:
-                if final_clean.startswith(emitted):
-                    delta = final_clean[len(emitted):]
-                    if delta:
-                        yield {"type": "token", "content": delta}
                 else:
-                    yield {"type": "token", "content": final_clean}
+                    yield {"type": "token", "content": token}
+
+            if accumulated and not _ends_with_sentence(accumulated):
+                clean = _trim_to_last_sentence(accumulated)
+                yield {"type": "token", "content": clean}
 
             yield {"type": "done", "matchedIntent": f"ollama:{Config.OLLAMA_MODEL}"}
 

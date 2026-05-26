@@ -39,15 +39,27 @@ class Config:
     OLLAMA_TIMEOUT_MS: int = _positive_int("OLLAMA_TIMEOUT_MS", 15_000)    # 15s hard ceiling
     OLLAMA_NUM_CTX: int = _positive_int("OLLAMA_NUM_CTX", 512)             # 512 tokens = enough for Q+A
     OLLAMA_NUM_THREAD: int = _positive_int("OLLAMA_NUM_THREAD", 4)
-    OLLAMA_NUM_PREDICT: int = _positive_int("OLLAMA_NUM_PREDICT", 120)     # 120 tokens ≈ 90 words
+    OLLAMA_NUM_PREDICT: int = _positive_int("OLLAMA_NUM_PREDICT", 350)
     OLLAMA_TEMPERATURE: float = _nonneg_float("OLLAMA_TEMPERATURE", 0.1)   # lower = faster, more focused
 
     # Reply quality controls
     # Continuations = extra round-trips = +10-15s each. Disabled.
     OLLAMA_MAX_CONTINUATIONS: int = 0
-    OLLAMA_MAX_WORDS: int = _positive_int("OLLAMA_MAX_WORDS", 100)
+    OLLAMA_MAX_WORDS: int = _positive_int("OLLAMA_MAX_WORDS", 200)
 
-    # Rate limiting
+    # Per-minute rate limiting (burst protection — unchanged)
     CHAT_RATE_LIMIT_MAX: int = _positive_int("CHAT_RATE_LIMIT_MAX", 20)
     CHAT_RATE_LIMIT_WINDOW_MS: int = _positive_int("CHAT_RATE_LIMIT_WINDOW_MS", 60_000)
     CHAT_MAX_MESSAGE_LENGTH: int = _positive_int("CHAT_MAX_MESSAGE_LENGTH", 1200)
+
+    # Daily question limit  ← NEW
+    # Set CHAT_DAILY_LIMIT=5 in .env to allow 5 questions per IP per day.
+    # Resets at midnight (server local time). Survives per-minute rate limit resets.
+    CHAT_DAILY_LIMIT: int = _positive_int("CHAT_DAILY_LIMIT", 5)
+
+    # Daily quota storage backend.
+    # `sqlite` is recommended for production so limits are shared across workers.
+    # `memory` keeps old behavior (per-process in-memory buckets).
+    CHAT_DAILY_STORE: str = os.environ.get("CHAT_DAILY_STORE", "sqlite").strip().lower()
+    CHAT_DAILY_SQLITE_PATH: str = os.environ.get("CHAT_DAILY_SQLITE_PATH", "./wavemind_daily_quota.sqlite3")
+    CHAT_DAILY_SQLITE_TIMEOUT_MS: int = _positive_int("CHAT_DAILY_SQLITE_TIMEOUT_MS", 5000)
