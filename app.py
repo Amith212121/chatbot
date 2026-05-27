@@ -13,6 +13,7 @@ Successful responses include `questionsRemaining` for the frontend counter.
 
 from __future__ import annotations
 
+import datetime
 import json
 import threading
 
@@ -30,6 +31,7 @@ from wavemind.chat_service import (
     stream_chat_reply,
     warmup_chat_provider,
 )
+from wavemind.chat_history_store import store_chat_history
 from wavemind.config import Config
 
 # ---------------------------------------------------------------------------
@@ -65,6 +67,28 @@ def _validate_message(message: str):
             "code": "MESSAGE_TOO_LONG",
         }, 413
     return None
+
+
+def _normalize_user_id(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    return cleaned[:200]
+
+
+def _get_user_id(body: dict, client_key: str) -> str:
+    candidates = [
+        body.get("userId"),
+        body.get("user_id"),
+        request.headers.get("X-User-Id", ""),
+    ]
+    for value in candidates:
+        normalized = _normalize_user_id(value)
+        if normalized:
+            return normalized
+    return f"anonymous:{client_key}"
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +131,8 @@ def chat():
         return jsonify(err[0]), err[1]
 
     client_key = _get_client_key()
+    user_id = _get_user_id(body, client_key)
+    asked_at = datetime.datetime.now(datetime.timezone.utc)
 
     # 1. Per-minute burst check (unchanged)
     if _check_rate_limit(client_key):
@@ -131,6 +157,17 @@ def chat():
             is_limited, remaining = _check_daily_limit(client_key)
             if is_limited:
                 remaining = 0
+
+        try:
+            store_chat_history(
+                user_id=user_id,
+                question=message,
+                answer=result["reply"],
+                asked_at=asked_at,
+            )
+        except Exception as exc:
+            print(f"[WaveMind] Failed to store chat history: {exc}")
+
         return jsonify({
             "text": result["reply"],
             "matchedIntent": result["matchedIntent"],
@@ -155,6 +192,8 @@ def chat_stream():
         return jsonify(err[0]), err[1]
 
     client_key = _get_client_key()
+    user_id = _get_user_id(body, client_key)
+    asked_at = datetime.datetime.now(datetime.timezone.utc)
 
     # 1. Per-minute burst check (unchanged)
     if _check_rate_limit(client_key):
@@ -177,11 +216,24 @@ def chat_stream():
         try:
             for chunk in stream_chat_reply(message):
                 if chunk.get("type") == "done":
+                    final_reply = (chunk.pop("finalReply", "") or "").strip()
                     if should_count and chunk.get("matchedIntent", "").startswith("ollama:"):
                         is_limited, updated_remaining = _check_daily_limit(client_key)
                         chunk["questionsRemaining"] = 0 if is_limited else updated_remaining
                     else:
                         chunk["questionsRemaining"] = remaining
+
+                    if final_reply:
+                        try:
+                            store_chat_history(
+                                user_id=user_id,
+                                question=message,
+                                answer=final_reply,
+                                asked_at=asked_at,
+                            )
+                        except Exception as exc:
+                            print(f"[WaveMind] Failed to store chat history: {exc}")
+
                 yield json.dumps(chunk) + "\n"
         except ChatServiceError as exc:
             yield json.dumps({"type": "error", "error": str(exc), "code": exc.code}) + "\n"

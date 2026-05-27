@@ -63,3 +63,14 @@ class Config:
     CHAT_DAILY_STORE: str = os.environ.get("CHAT_DAILY_STORE", "sqlite").strip().lower()
     CHAT_DAILY_SQLITE_PATH: str = os.environ.get("CHAT_DAILY_SQLITE_PATH", "./wavemind_daily_quota.sqlite3")
     CHAT_DAILY_SQLITE_TIMEOUT_MS: int = _positive_int("CHAT_DAILY_SQLITE_TIMEOUT_MS", 5000)
+
+    # Chat history persistence
+    # Set CHAT_HISTORY_STORE=postgres and provide CHAT_HISTORY_DATABASE_URL.
+    # Example:
+    # postgres://username:password@localhost:5432/wavemind
+    CHAT_HISTORY_STORE: str = os.environ.get("CHAT_HISTORY_STORE", "disabled").strip().lower()
+    CHAT_HISTORY_DATABASE_URL: str = os.environ.get(
+        "CHAT_HISTORY_DATABASE_URL",
+        os.environ.get("DATABASE_URL", ""),
+    ).strip()
+    CHAT_HISTORY_CONNECT_TIMEOUT_S: int = _positive_int("CHAT_HISTORY_CONNECT_TIMEOUT_S", 5)

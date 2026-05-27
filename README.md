@@ -8,6 +8,7 @@ Flask-based medical chatbot API backed by Ollama.
 - Supports normal response mode and NDJSON streaming mode.
 - Applies per-minute rate limiting.
 - Applies per-day quota only for successful medical answers.
+- Can store chat history in Postgres per website user (`question`, `answer`, `asked_at`).
 
 ## API endpoints
 - `GET /api/chat` - health check, provider status, model, and daily limit.
@@ -28,6 +29,21 @@ Flask-based medical chatbot API backed by Ollama.
 - `CHAT_DAILY_STORE=memory`: per-process in-memory quota (not shared across workers).
 - `CHAT_DAILY_SQLITE_PATH=./wavemind_daily_quota.sqlite3`: SQLite file path.
 - `CHAT_DAILY_SQLITE_TIMEOUT_MS=5000`: SQLite lock wait timeout.
+
+## Chat history in Postgres
+- Set `CHAT_HISTORY_STORE=postgres`.
+- Set `CHAT_HISTORY_DATABASE_URL=postgres://username:password@localhost:5432/wavemind`.
+- Optional: `CHAT_HISTORY_CONNECT_TIMEOUT_S=5`.
+- If `CHAT_HISTORY_STORE` is not `postgres`, history logging stays disabled.
+- Table created automatically: `chat_history(user_id, question, answer, asked_at)`.
+
+### Pass website user id
+To store history under each website user, send one of these in your chat request:
+- JSON body `userId` (preferred)
+- JSON body `user_id`
+- Header `X-User-Id`
+
+If no user id is sent, the API stores the entry under `anonymous:<client-ip>`.
 
 ## Project structure
 - `app.py` - all API routes and request flow.

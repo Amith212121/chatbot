@@ -568,12 +568,12 @@ def stream_chat_reply(message: str) -> Generator[dict, None, None]:
 
     if _is_greeting(normalized):
         yield {"type": "token", "content": GREETING_REPLY}
-        yield {"type": "done", "matchedIntent": "greeting"}
+        yield {"type": "done", "matchedIntent": "greeting", "finalReply": GREETING_REPLY}
         return
 
     if not _is_medical_related(normalized):
         yield {"type": "token", "content": MEDICAL_ONLY_REPLY}
-        yield {"type": "done", "matchedIntent": "medical_scope_decline"}
+        yield {"type": "done", "matchedIntent": "medical_scope_decline", "finalReply": MEDICAL_ONLY_REPLY}
         return
 
     if Config.CHAT_PROVIDER == "ollama":
@@ -591,7 +591,11 @@ def stream_chat_reply(message: str) -> Generator[dict, None, None]:
                     if not _ends_with_sentence(final):
                         final = _trim_to_last_sentence(final)
                     yield {"type": "token", "content": final}
-                    yield {"type": "done", "matchedIntent": f"ollama:{Config.OLLAMA_MODEL}:word_limit"}
+                    yield {
+                        "type": "done",
+                        "matchedIntent": f"ollama:{Config.OLLAMA_MODEL}:word_limit",
+                        "finalReply": final,
+                    }
                     return
                 else:
                     yield {"type": "token", "content": token}
@@ -599,8 +603,17 @@ def stream_chat_reply(message: str) -> Generator[dict, None, None]:
             if accumulated and not _ends_with_sentence(accumulated):
                 clean = _trim_to_last_sentence(accumulated)
                 yield {"type": "token", "content": clean}
+                accumulated = clean
 
-            yield {"type": "done", "matchedIntent": f"ollama:{Config.OLLAMA_MODEL}"}
+            final_reply = re.sub(r"\s+", " ", accumulated).strip()
+            if not final_reply:
+                raise ChatServiceError("PROVIDER_EMPTY_RESPONSE", "Ollama returned an empty reply", 502)
+
+            yield {
+                "type": "done",
+                "matchedIntent": f"ollama:{Config.OLLAMA_MODEL}",
+                "finalReply": final_reply,
+            }
 
         except ChatServiceError:
             raise
