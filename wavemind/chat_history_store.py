@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-import threading
+from multiprocessing import Lock
 
 from wavemind.config import Config
 
@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover - handled at runtime
     psycopg2 = None
 
 
-_chat_history_init_lock = threading.Lock()
+_chat_history_init_lock = Lock()
 _chat_history_initialized = False
 _chat_history_disabled_reason_logged = False
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import threading
 
 import requests as _requests
 from flask import Flask, Response, jsonify, request, stream_with_context
@@ -42,8 +41,8 @@ app = Flask(__name__)
 app.config.from_object(Config)
 CORS(app)
 
-# Warm up Ollama model in background so first request is fast
-threading.Thread(target=warmup_chat_provider, daemon=True).start()
+# Warm up Ollama model once during startup so first request is fast.
+warmup_chat_provider()
 
 
 # ---------------------------------------------------------------------------
@@ -260,4 +259,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=Config.PORT,
         debug=Config.DEBUG,
+        threaded=False,
     )

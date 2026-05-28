@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import time
-import threading
+from multiprocessing import Lock
 from typing import Generator
 
 import requests
@@ -281,7 +281,7 @@ def _get_ollama_reply(message: str) -> dict:
 # Per-minute rate limiting (burst protection — unchanged)
 # ---------------------------------------------------------------------------
 
-_rate_lock = threading.Lock()
+_rate_lock = Lock()
 _rate_buckets: dict[str, dict] = {}
 
 
@@ -310,9 +310,9 @@ def _check_rate_limit(client_key: str) -> bool:
 # Daily question limit
 # ---------------------------------------------------------------------------
 
-_daily_lock = threading.Lock()
+_daily_lock = Lock()
 _daily_buckets: dict[str, dict] = {}  # in-memory fallback: client_key -> {count, reset_at}
-_daily_sqlite_init_lock = threading.Lock()
+_daily_sqlite_init_lock = Lock()
 _daily_sqlite_initialized = False
 _daily_sqlite_fallback_logged = False
 
